@@ -8,7 +8,7 @@ import torch
 
 from models import SteganoGAN
 from critics import BasicCritic
-from decoders import DenseDecoder
+from decoders import DenseDecoder, BasicDecoder
 from encoders import BasicEncoder, DenseEncoder, ResidualEncoder
 from loader import DataLoader
 
