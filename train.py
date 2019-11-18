@@ -15,12 +15,12 @@ from loader import DataLoader
 
 def main():
     torch.manual_seed(42)
-    timestamp = int(time())
+    timestamp = str(int(time()))
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--encoder', default="basic", type=str)
-    parser.add_argument('--decoder', default="basic", type=str)
+    parser.add_argument('--encoder', default="dense", type=str)
+    parser.add_argument('--decoder', default="dense", type=str)
     parser.add_argument('--critic', default="basic", type=str)
 
     parser.add_argument('--epochs', default=4, type=int)
@@ -42,7 +42,7 @@ def main():
 
     decoder = {
         "basic": BasicDecoder,
-        "dense:": DenseDecoder,
+        "dense": DenseDecoder,
     }[args.decoder]
 
     critic = {
@@ -55,7 +55,7 @@ def main():
         decoder=decoder,
         critic=critic,
         hidden_size=args.hidden_size,
-        cuda=False,
+        cuda=True,
         verbose=True,
         log_dir=os.path.join('models', timestamp)
     )
