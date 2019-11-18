@@ -14,7 +14,8 @@ from torch.optim import Adam
 from tqdm import tqdm
 
 from utils import bits_to_bytearray, bytearray_to_text, ssim, text_to_bits
-
+import torchvision.models as models
+import torch.nn.functional as F
 
 DEFAULT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -31,6 +32,7 @@ METRIC_FIELDS = [
     'val.bpp',
     'train.encoder_mse',
     'train.decoder_loss',
+    'train.perceptual_loss',
     'train.decoder_acc',
     'train.cover_score',
     'train.generated_score',
@@ -38,7 +40,7 @@ METRIC_FIELDS = [
 
 class ResNet50FC(nn.Module):
     def __init__(self, original_model):
-        super(ResNet50Bottom, self).__init__()
+        super(ResNet50FC, self).__init__()
         self.features = nn.Sequential(*list(original_model.children())[:-1])
         
     def forward(self, x):
@@ -387,7 +389,6 @@ class SteganoGANPerceptualLoss(SteganoGAN):
         super().__init__(data_depth, encoder, decoder, critic, cuda, verbose, log_dir, **kwargs)
 
     def _fit_coders(self, train, metrics):
-        print("HERE")
         """Fit the encoder and the decoder on the train images."""
         for cover, _ in tqdm(train, disable=not self.verbose):
             gc.collect()
@@ -397,16 +398,21 @@ class SteganoGANPerceptualLoss(SteganoGAN):
                 cover, generated, payload, decoded)
             generated_score = self._critic(generated)
 
-            res50_model = models.resnet50(pretrained=True)
-            res50_conv2 = ResNet50Bottom(res50_model)
+            perceptual_loss = None
+            with torch.no_grad():
+                res50_model = models.resnet50(pretrained=True)
+                res50_fc = ResNet50FC(res50_model)
+                res50_fc.cuda()
 
-            print(generated.shape)
-            return
+                phi_generated = res50_fc.forward(generated).squeeze() # [batch size, 2048]
+                phi_cover = res50_fc.forward(cover).squeeze()
+                perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated, p=2, dim=1), dim=0)
 
             self.decoder_optimizer.zero_grad()
-            (100.0 * encoder_mse + decoder_loss + generated_score).backward()
+            (100.0 * encoder_mse + decoder_loss + generated_score + perceptual_loss).backward()
             self.decoder_optimizer.step()
 
+            metrics['train.perceptual_loss'].append(perceptual_loss.item())
             metrics['train.encoder_mse'].append(encoder_mse.item())
             metrics['train.decoder_loss'].append(decoder_loss.item())
             metrics['train.decoder_acc'].append(decoder_acc.item())        
