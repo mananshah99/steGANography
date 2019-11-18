@@ -8,11 +8,13 @@ from collections import Counter
 import imageio
 import torch
 from imageio import imread, imwrite
+import torch.nn as nn
 from torch.nn.functional import binary_cross_entropy_with_logits, mse_loss
 from torch.optim import Adam
 from tqdm import tqdm
 
 from utils import bits_to_bytearray, bytearray_to_text, ssim, text_to_bits
+
 
 DEFAULT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -34,6 +36,14 @@ METRIC_FIELDS = [
     'train.generated_score',
 ]
 
+class ResNet50FC(nn.Module):
+    def __init__(self, original_model):
+        super(ResNet50Bottom, self).__init__()
+        self.features = nn.Sequential(*list(original_model.children())[:-1])
+        
+    def forward(self, x):
+        x = self.features(x)
+        return x
 
 class SteganoGAN(object):
 
@@ -370,3 +380,33 @@ class SteganoGAN(object):
 
         steganogan.set_device(cuda)
         return steganogan
+
+class SteganoGANPerceptualLoss(SteganoGAN):
+    def __init__(self, data_depth, encoder, decoder, critic,
+             cuda=False, verbose=False, log_dir=None, **kwargs):
+        super().__init__(data_depth, encoder, decoder, critic, cuda, verbose, log_dir, **kwargs)
+
+    def _fit_coders(self, train, metrics):
+        print("HERE")
+        """Fit the encoder and the decoder on the train images."""
+        for cover, _ in tqdm(train, disable=not self.verbose):
+            gc.collect()
+            cover = cover.to(self.device)
+            generated, payload, decoded = self._encode_decode(cover)
+            encoder_mse, decoder_loss, decoder_acc = self._coding_scores(
+                cover, generated, payload, decoded)
+            generated_score = self._critic(generated)
+
+            res50_model = models.resnet50(pretrained=True)
+            res50_conv2 = ResNet50Bottom(res50_model)
+
+            print(generated.shape)
+            return
+
+            self.decoder_optimizer.zero_grad()
+            (100.0 * encoder_mse + decoder_loss + generated_score).backward()
+            self.decoder_optimizer.step()
+
+            metrics['train.encoder_mse'].append(encoder_mse.item())
+            metrics['train.decoder_loss'].append(decoder_loss.item())
+            metrics['train.decoder_acc'].append(decoder_acc.item())        
