@@ -22,7 +22,7 @@ def main():
     parser.add_argument('--encoder', default="dense", type=str)
     parser.add_argument('--decoder', default="dense", type=str)
     parser.add_argument('--critic', default="basic", type=str)
-    parser.add_argument('--perceptual', default=False, type=bool)
+    parser.add_argument('--perceptual', default=False, action="store_true")
 
     parser.add_argument('--epochs', default=1, type=int)
 
@@ -30,7 +30,11 @@ def main():
     parser.add_argument('--hidden_size', default=32, type=int)
     parser.add_argument('--dataset', default="div2k", type=str)
     parser.add_argument('--output', default=False, type=str)
+    parser.add_argument('--gpu', default=0, type=int)
+
     args = parser.parse_args()
+    
+    torch.cuda.set_device(args.gpu)
 
     train = DataLoader(os.path.join("data", args.dataset, "train"), shuffle=True, num_workers=0)
     validation = DataLoader(os.path.join("data", args.dataset, "val"), shuffle=False, num_workers=0)

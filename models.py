@@ -124,9 +124,9 @@ class SteganoGAN(object):
             generated (image): Image generated with the encoded message.
         """
         N, _, H, W = cover.size()
-        bitmask = torch.FloatTensor(N, self.data_depth, H, W, device=self.device).uniform_() > (1 - data_size)
+        #bitmask = torch.FloatTensor(N, self.data_depth, H, W, device=self.device).uniform_() > (1 - data_size)
         data = torch.zeros((N, self.data_depth, H, W), device=self.device).random_(0, 2)
-        return bitmask * data
+        return data #bitmask * data
 
     def _encode_decode(self, cover, quantize=False):
         """Encode random data and then decode it.
@@ -195,11 +195,9 @@ class SteganoGAN(object):
                 cover, generated, payload, decoded)
             generated_score = self._critic(generated)
 
-            perceptual_loss = None
-            with torch.no_grad():
-                phi_generated = self.perceptual_loss_fc.forward(generated).squeeze() # [batch size, 2048]
-                phi_cover = self.perceptual_loss_fc.forward(cover).squeeze()
-                perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated, p=2, dim=1), dim=0)
+            phi_generated = self.perceptual_loss_fc.forward(generated).squeeze() # [batch size, 2048]
+            phi_cover = self.perceptual_loss_fc.forward(cover).squeeze()
+            perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated, p=2, dim=1), dim=0)
 
             self.decoder_optimizer.zero_grad()
 
