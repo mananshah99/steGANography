@@ -2,7 +2,8 @@
 
 import torch
 from torch import nn
-
+from torchvision.models import densenet, resnet
+import torch.nn.functional as F
 
 class BasicCritic(nn.Module):
     """
@@ -53,5 +54,27 @@ class BasicCritic(nn.Module):
     def forward(self, x):
         x = self._models(x)
         x = torch.mean(x.view(x.size(0), -1), dim=1)
+        return x
 
+class DenseCritic(BasicCritic):
+    def __init__(self, hidden_size):
+        super().__init__(hidden_size)
+        
+        self._models = densenet.densenet121(pretrained=True)
+        self._models.classifier = nn.Linear(self._models.classifier.in_features, 1)
+        self._models.train()
+
+    def forward(self, x):
+        x = F.softmax(self._models(x))
+        return x
+
+class ResidualCritic(BasicCritic):
+    def __init__(self, hidden_size):
+        super().__init__(hidden_size)
+        
+        self._models = resnet.ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1)
+        self._models.train()
+
+    def forward(self, x):
+        x = F.softmax(self._models(x))
         return x
