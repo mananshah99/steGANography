@@ -61,20 +61,33 @@ class DenseCritic(BasicCritic):
         super().__init__(hidden_size)
         
         self._models = densenet.densenet121(pretrained=True)
-        self._models.classifier = nn.Linear(self._models.classifier.in_features, 1)
         self._models.train()
 
     def forward(self, x):
-        x = F.softmax(self._models(x))
-        return x
+        features = self._models.features(x)
+        out = F.relu(features, inplace=True)
+        out = F.avg_pool2d(out, kernel_size=7).view(features.size(0), -1)
+        out = torch.mean(out.view(out.size(0), -1), dim=1)
+        return out 
 
 class ResidualCritic(BasicCritic):
     def __init__(self, hidden_size):
         super().__init__(hidden_size)
         
-        self._models = resnet.ResNet(BasicBlock, [2, 2, 2, 2], num_classes=1)
+        self._models = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], num_classes=2)
         self._models.train()
 
     def forward(self, x):
-        x = F.softmax(self._models(x))
-        return x
+        x = self._models.conv1(x)
+        x = self._models.bn1(x)
+        x = self._models.relu(x)
+        x = self._models.maxpool(x)
+
+        x = self._models.layer1(x)
+        x = self._models.layer2(x)
+        x = self._models.layer3(x)
+        x = self._models.layer4(x)
+
+        x = self._models.avgpool(x)
+        x = torch.mean(x.view(x.size(0), -1), dim=1)
+        return x[0]
