@@ -7,7 +7,7 @@ from time import time
 import torch
 
 from models import *
-from critics import BasicCritic
+from critics import BasicCritic, DenseCritic, ResidualCritic
 from decoders import DenseDecoder, BasicDecoder
 from encoders import BasicEncoder, DenseEncoder, ResidualEncoder
 from loader import DataLoader
@@ -15,15 +15,16 @@ from loader import DataLoader
 
 def main():
     torch.manual_seed(42)
-    timestamp = str(int(time()))
-
+    
     parser = argparse.ArgumentParser()
+    parser.add_argument('--name', default=str(int(time())), type=str)
 
     parser.add_argument('--encoder', default="dense", type=str)
     parser.add_argument('--decoder', default="dense", type=str)
     parser.add_argument('--critic', default="basic", type=str)
+    parser.add_argument('--perceptual', default=False, type=bool)
 
-    parser.add_argument('--epochs', default=4, type=int)
+    parser.add_argument('--epochs', default=1, type=int)
 
     parser.add_argument('--data_depth', default=1, type=int)
     parser.add_argument('--hidden_size', default=32, type=int)
@@ -46,10 +47,13 @@ def main():
     }[args.decoder]
 
     critic = {
-        "basic": BasicCritic
+        "basic": BasicCritic,
+        "residual": ResidualCritic,
+        "dense": DenseCritic,
     }[args.critic]
 
-    model = SteganoGANPerceptualLoss(
+    model = SteganoGAN(
+        perceptual_loss=args.perceptual,
         data_depth=args.data_depth,
         encoder=encoder,
         decoder=decoder,
@@ -57,14 +61,14 @@ def main():
         hidden_size=args.hidden_size,
         cuda=True,
         verbose=True,
-        log_dir=os.path.join('models', timestamp)
+        log_dir=os.path.join('models', args.name)
     )
 
-    with open(os.path.join("models", timestamp, "config.json"), "wt") as fout:
+    with open(os.path.join("models", args.name, "config.json"), "wt") as fout:
         fout.write(json.dumps(args.__dict__, indent=2, default=lambda o: str(o)))
 
     model.fit(train, validation, epochs=args.epochs)
-    model.save(os.path.join("models", timestamp, "weights.bin"))
+    model.save(os.path.join("models", args.name, "weights.bin"))
     if args.output:
         model.save(args.output)
 
