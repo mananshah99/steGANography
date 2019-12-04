@@ -30,6 +30,7 @@ METRIC_FIELDS = [
     'val.ssim',
     'val.psnr',
     'val.bpp',
+    'val.perceptual_loss',
     'train.encoder_mse',
     'train.decoder_loss',
     'train.perceptual_loss',
@@ -83,8 +84,9 @@ class SteganoGAN(object):
         self.critic.to(self.device)
 
     def __init__(self, data_depth, encoder, decoder, critic,
-                 cuda=False, verbose=False, log_dir=None, **kwargs):
+                 perceptual_loss=False, cuda=False, verbose=False, log_dir=None, **kwargs):
 
+        self.perceptual_loss = perceptual_loss
         self.verbose = verbose
 
         self.data_depth = data_depth
@@ -97,6 +99,11 @@ class SteganoGAN(object):
         self.critic_optimizer = None
         self.decoder_optimizer = None
 
+        with torch.no_grad():
+            self.perceptual_loss_model = models.resnet50(pretrained=True)
+            self.perceptual_loss_fc = ResNet50FC(self.perceptual_loss_model)
+            self.perceptual_loss_fc.cuda()
+
         # Misc
         self.fit_metrics = None
         self.history = list()
@@ -107,7 +114,7 @@ class SteganoGAN(object):
             self.samples_path = os.path.join(self.log_dir, 'samples')
             os.makedirs(self.samples_path, exist_ok=True)
 
-    def _random_data(self, cover):
+    def _random_data(self, cover, data_size=1):
         """Generate random data ready to be hidden inside the cover image.
 
         Args:
@@ -117,7 +124,9 @@ class SteganoGAN(object):
             generated (image): Image generated with the encoded message.
         """
         N, _, H, W = cover.size()
-        return torch.zeros((N, self.data_depth, H, W), device=self.device).random_(0, 2)
+        bitmask = torch.FloatTensor(N, self.data_depth, H, W, device=self.device).uniform_() > (1 - data_size)
+        data = torch.zeros((N, self.data_depth, H, W), device=self.device).random_(0, 2)
+        return bitmask * data
 
     def _encode_decode(self, cover, quantize=False):
         """Encode random data and then decode it.
@@ -172,6 +181,10 @@ class SteganoGAN(object):
             metrics['train.cover_score'].append(cover_score.item())
             metrics['train.generated_score'].append(generated_score.item())
 
+
+    def transform(transform_type='color_filter'):
+        pass
+
     def _fit_coders(self, train, metrics):
         """Fit the encoder and the decoder on the train images."""
         for cover, _ in tqdm(train, disable=not self.verbose):
@@ -182,10 +195,22 @@ class SteganoGAN(object):
                 cover, generated, payload, decoded)
             generated_score = self._critic(generated)
 
+            perceptual_loss = None
+            with torch.no_grad():
+                phi_generated = self.perceptual_loss_fc.forward(generated).squeeze() # [batch size, 2048]
+                phi_cover = self.perceptual_loss_fc.forward(cover).squeeze()
+                perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated, p=2, dim=1), dim=0)
+
             self.decoder_optimizer.zero_grad()
-            (100.0 * encoder_mse + decoder_loss + generated_score).backward()
+
+            total_loss = 100.0 * encoder_mse + decoder_loss + generated_score
+            if self.perceptual_loss:
+                total_loss += perceptual_loss
+
+            (total_loss).backward()
             self.decoder_optimizer.step()
 
+            metrics['train.perceptual_loss'].append(perceptual_loss.item())
             metrics['train.encoder_mse'].append(encoder_mse.item())
             metrics['train.decoder_loss'].append(decoder_loss.item())
             metrics['train.decoder_acc'].append(decoder_acc.item())
@@ -208,6 +233,13 @@ class SteganoGAN(object):
             generated_score = self._critic(generated)
             cover_score = self._critic(cover)
 
+            perceptual_loss = None
+            with torch.no_grad():
+                phi_generated = self.perceptual_loss_fc.forward(generated).squeeze() # [batch size, 2048]
+                phi_cover = self.perceptual_loss_fc.forward(cover).squeeze()
+                perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated, p=2, dim=1), dim=0)
+
+            metrics['val.perceptual_loss'].append(perceptual_loss.item())
             metrics['val.encoder_mse'].append(encoder_mse.item())
             metrics['val.decoder_loss'].append(decoder_loss.item())
             metrics['val.decoder_acc'].append(decoder_acc.item())
@@ -382,37 +414,3 @@ class SteganoGAN(object):
 
         steganogan.set_device(cuda)
         return steganogan
-
-class SteganoGANPerceptualLoss(SteganoGAN):
-    def __init__(self, data_depth, encoder, decoder, critic,
-             cuda=False, verbose=False, log_dir=None, **kwargs):
-        super().__init__(data_depth, encoder, decoder, critic, cuda, verbose, log_dir, **kwargs)
-
-    def _fit_coders(self, train, metrics):
-        """Fit the encoder and the decoder on the train images."""
-        for cover, _ in tqdm(train, disable=not self.verbose):
-            gc.collect()
-            cover = cover.to(self.device)
-            generated, payload, decoded = self._encode_decode(cover)
-            encoder_mse, decoder_loss, decoder_acc = self._coding_scores(
-                cover, generated, payload, decoded)
-            generated_score = self._critic(generated)
-
-            perceptual_loss = None
-            with torch.no_grad():
-                res50_model = models.resnet50(pretrained=True)
-                res50_fc = ResNet50FC(res50_model)
-                res50_fc.cuda()
-
-                phi_generated = res50_fc.forward(generated).squeeze() # [batch size, 2048]
-                phi_cover = res50_fc.forward(cover).squeeze()
-                perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated, p=2, dim=1), dim=0)
-
-            self.decoder_optimizer.zero_grad()
-            (100.0 * encoder_mse + decoder_loss + generated_score + perceptual_loss).backward()
-            self.decoder_optimizer.step()
-
-            metrics['train.perceptual_loss'].append(perceptual_loss.item())
-            metrics['train.encoder_mse'].append(encoder_mse.item())
-            metrics['train.decoder_loss'].append(decoder_loss.item())
-            metrics['train.decoder_acc'].append(decoder_acc.item())        
