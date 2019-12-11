@@ -17,6 +17,8 @@ from utils import bits_to_bytearray, bytearray_to_text, ssim, text_to_bits
 import torchvision.models as models
 import torch.nn.functional as F
 
+import transforms
+
 DEFAULT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     'train')
@@ -24,12 +26,14 @@ DEFAULT_PATH = os.path.join(
 METRIC_FIELDS = [
     'val.encoder_mse',
     'val.decoder_loss',
-    'val.decoder_acc',
+    'val.decoder_acc_g',
+    'val.decoder_acc_t',
     'val.cover_score',
     'val.generated_score',
     'val.ssim',
     'val.psnr',
-    'val.bpp',
+    'val.bpp_g',
+    'val.bpp_t',
     'val.perceptual_loss',
     'train.encoder_mse',
     'train.decoder_loss',
@@ -43,7 +47,7 @@ class ResNet50FC(nn.Module):
     def __init__(self, original_model):
         super(ResNet50FC, self).__init__()
         self.features = nn.Sequential(*list(original_model.children())[:-1])
-        
+
     def forward(self, x):
         x = self.features(x)
         return x
@@ -128,7 +132,7 @@ class SteganoGAN(object):
         data = torch.zeros((N, self.data_depth, H, W), device=self.device).random_(0, 2)
         return data #bitmask * data
 
-    def _encode_decode(self, cover, quantize=False):
+    def _encode_decode(self, cover, quantize=False, transform=None):
         """Encode random data and then decode it.
 
         Args:
@@ -142,13 +146,25 @@ class SteganoGAN(object):
         """
         payload = self._random_data(cover)
         generated = self.encoder(cover, payload)
+
         if quantize:
             generated = (255.0 * (generated + 1.0) / 2.0).long()
             generated = 2.0 * generated.float() / 255.0 - 1.0
 
-        decoded = self.decoder(generated)
+        if transform == 'rotate':
+            transformed = transforms.rotate_left_90(generated)
+        elif transform == 'gaussian':
+            transformed = transforms.add_gaussian_noise(generated)
+        elif transform == 'white_color':
+            transformed = transforms.color_filter(generated, alpha=0.5,
+                color=(255., 255., 255.))
+        else:
+            transformed = generated
 
-        return generated, payload, decoded
+        decoded_g = self.decoder(generated)
+        decoded_t = self.decoder(transformed)
+
+        return generated, payload, decoded_g, decoded_t
 
     def _critic(self, image):
         """Evaluate the image using the critic"""
@@ -181,16 +197,12 @@ class SteganoGAN(object):
             metrics['train.cover_score'].append(cover_score.item())
             metrics['train.generated_score'].append(generated_score.item())
 
-
-    def transform(transform_type='color_filter'):
-        pass
-
     def _fit_coders(self, train, metrics):
         """Fit the encoder and the decoder on the train images."""
         for cover, _ in tqdm(train, disable=not self.verbose):
             gc.collect()
             cover = cover.to(self.device)
-            generated, payload, decoded = self._encode_decode(cover)
+            generated, payload, _, decoded = self._encode_decode(cover)
             encoder_mse, decoder_loss, decoder_acc = self._coding_scores(
                 cover, generated, payload, decoded)
             generated_score = self._critic(generated)
@@ -220,14 +232,16 @@ class SteganoGAN(object):
 
         return encoder_mse, decoder_loss, decoder_acc
 
-    def _validate(self, validate, metrics):
+    def _validate(self, validate, metrics, transform=None):
         """Validation process"""
         for cover, _ in tqdm(validate, disable=not self.verbose):
             gc.collect()
             cover = cover.to(self.device)
-            generated, payload, decoded = self._encode_decode(cover, quantize=True)
-            encoder_mse, decoder_loss, decoder_acc = self._coding_scores(
-                cover, generated, payload, decoded)
+            generated, payload, decoded_g, decoded_t = self._encode_decode(
+                cover, quantize=True, transform=transform)
+            encoder_mse, decoder_loss, decoder_acc_g = self._coding_scores(
+                cover, generated, payload, decoded_g)
+            _, _, decoder_acc_t = self._coding_scores(cover, generated, payload, decoded_t)
             generated_score = self._critic(generated)
             cover_score = self._critic(cover)
 
@@ -240,16 +254,18 @@ class SteganoGAN(object):
             metrics['val.perceptual_loss'].append(perceptual_loss.item())
             metrics['val.encoder_mse'].append(encoder_mse.item())
             metrics['val.decoder_loss'].append(decoder_loss.item())
-            metrics['val.decoder_acc'].append(decoder_acc.item())
+            metrics['val.decoder_acc_g'].append(decoder_acc_g.item())
+            metrics['val.decoder_acc_t'].append(decoder_acc_t.item())
             metrics['val.cover_score'].append(cover_score.item())
             metrics['val.generated_score'].append(generated_score.item())
             metrics['val.ssim'].append(ssim(cover, generated).item())
             metrics['val.psnr'].append(10 * torch.log10(4 / encoder_mse).item())
-            metrics['val.bpp'].append(self.data_depth * (2 * decoder_acc.item() - 1))
+            metrics['val.bpp_g'].append(self.data_depth * (2 * decoder_acc_g.item() - 1))
+            metrics['val.bpp_t'].append(self.data_depth * (2 * decoder_acc_t.item() - 1))
 
     def _generate_samples(self, samples_path, cover, epoch):
         cover = cover.to(self.device)
-        generated, payload, decoded = self._encode_decode(cover)
+        generated, payload, decoded, _ = self._encode_decode(cover)
         samples = generated.size(0)
         for sample in range(samples):
             cover_path = os.path.join(samples_path, '{}.cover.png'.format(sample))
@@ -301,7 +317,7 @@ class SteganoGAN(object):
                     json.dump(self.history, metrics_file, indent=4)
 
                 save_name = '{}.bpp-{:03f}.p'.format(
-                    self.epochs, self.fit_metrics['val.bpp'])
+                    self.epochs, self.fit_metrics['val.bpp_g'])
 
                 self.save(os.path.join(self.log_dir, save_name))
                 self._generate_samples(self.samples_path, sample_cover, epoch)

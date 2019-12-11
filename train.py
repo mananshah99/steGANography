@@ -15,7 +15,7 @@ from loader import DataLoader
 
 def main():
     torch.manual_seed(42)
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', default=str(int(time())), type=str)
 
@@ -33,7 +33,7 @@ def main():
     parser.add_argument('--gpu', default=0, type=int)
 
     args = parser.parse_args()
-    
+
     torch.cuda.set_device(args.gpu)
 
     train = DataLoader(os.path.join("data", args.dataset, "train"), shuffle=True, num_workers=0)
