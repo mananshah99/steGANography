@@ -24,6 +24,9 @@ def main():
     parser.add_argument('--critic', default="basic", type=str)
     parser.add_argument('--perceptual', default=False, action="store_true")
 
+    parser.add_argument('--transform', default=None, type=str)
+    parser.add_argument('--transform_prob', default=0, type=float)
+
     parser.add_argument('--epochs', default=1, type=int)
 
     parser.add_argument('--data_depth', default=1, type=int)
@@ -71,7 +74,8 @@ def main():
     with open(os.path.join("models", args.name, "config.json"), "wt") as fout:
         fout.write(json.dumps(args.__dict__, indent=2, default=lambda o: str(o)))
 
-    model.fit(train, validation, epochs=args.epochs)
+    model.fit(train, validation, epochs=args.epochs, transform=args.transform,
+        transform_prob=args.transform_prob)
     model.save(os.path.join("models", args.name, "weights.bin"))
     if args.output:
         model.save(args.output)

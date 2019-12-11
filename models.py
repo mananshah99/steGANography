@@ -197,12 +197,17 @@ class SteganoGAN(object):
             metrics['train.cover_score'].append(cover_score.item())
             metrics['train.generated_score'].append(generated_score.item())
 
-    def _fit_coders(self, train, metrics):
+    def _fit_coders(self, train, metrics, transform, transform_prob):
         """Fit the encoder and the decoder on the train images."""
         for cover, _ in tqdm(train, disable=not self.verbose):
             gc.collect()
             cover = cover.to(self.device)
-            generated, payload, _, decoded = self._encode_decode(cover)
+            if torch.rand(1).item() < transform_prob:
+                batch_transform = transform
+            else:
+                batch_transform = None
+            generated, payload, _, decoded = self._encode_decode(cover,
+                transform=batch_transform)
             encoder_mse, decoder_loss, decoder_acc = self._coding_scores(
                 cover, generated, payload, decoded)
             generated_score = self._critic(generated)
@@ -281,7 +286,7 @@ class SteganoGAN(object):
             image = sampled / 2.0
             imageio.imwrite(sample_path, (255.0 * image).astype('uint8'))
 
-    def fit(self, train, validate, epochs=5):
+    def fit(self, train, validate, epochs=5, transform=None, transform_prob=0):
         """Train a new model with the given ImageLoader class."""
 
         if self.critic_optimizer is None:
@@ -303,8 +308,9 @@ class SteganoGAN(object):
                 print('Epoch {}/{}'.format(self.epochs, total))
 
             self._fit_critic(train, metrics)
-            self._fit_coders(train, metrics)
-            self._validate(validate, metrics)
+            self._fit_coders(train, metrics, transform=transform,
+                transform_prob=transform_prob)
+            self._validate(validate, metrics, transform=transform)
 
             self.fit_metrics = {k: sum(v) / len(v) for k, v in metrics.items()}
             self.fit_metrics['epoch'] = epoch

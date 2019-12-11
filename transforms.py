@@ -1,5 +1,7 @@
+import torch
+
 def rotate_left_90(img):
-    return img.transpose(-2, -1).flip(-2)
+    return torch.rot90(img, 1, [2, 3])
 
 def add_gaussian_noise(img):
     return torch.clamp(img + torch.randn_like(img) * 2 - 1, -1, 1)
