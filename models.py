@@ -17,24 +17,31 @@ from utils import bits_to_bytearray, bytearray_to_text, ssim, text_to_bits
 import torchvision.models as models
 import torch.nn.functional as F
 
+import transforms
+
 DEFAULT_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     'train')
 
 METRIC_FIELDS = [
     'val.encoder_mse',
-    'val.decoder_loss',
-    'val.decoder_acc',
+    'val.decoder_loss_g',
+    'val.decoder_loss_t',
+    'val.decoder_acc_g',
+    'val.decoder_acc_t',
     'val.cover_score',
     'val.generated_score',
     'val.ssim',
     'val.psnr',
-    'val.bpp',
+    'val.bpp_g',
+    'val.bpp_t',
     'val.perceptual_loss',
     'train.encoder_mse',
-    'train.decoder_loss',
+    'train.decoder_loss_t',
+    'train.decoder_loss_g',
     'train.perceptual_loss',
-    'train.decoder_acc',
+    'train.decoder_acc_t',
+    'train.decoder_acc_g',
     'train.cover_score',
     'train.generated_score',
 ]
@@ -43,7 +50,7 @@ class ResNet50FC(nn.Module):
     def __init__(self, original_model):
         super(ResNet50FC, self).__init__()
         self.features = nn.Sequential(*list(original_model.children())[:-1])
-        
+
     def forward(self, x):
         x = self.features(x)
         return x
@@ -62,17 +69,17 @@ class SteganoGAN(object):
 
         return class_or_instance(**init_args)
 
-    def set_device(self, cuda=True):
+    def set_device(self, gpu=0):
         """Sets the torch device depending on whether cuda is avaiable or not."""
-        if cuda and torch.cuda.is_available():
+        if gpu > -1 and torch.cuda.is_available():
             self.cuda = True
-            self.device = torch.device('cuda')
+            self.device = torch.device('cuda:{}'.format(gpu))
         else:
             self.cuda = False
             self.device = torch.device('cpu')
 
         if self.verbose:
-            if not cuda:
+            if gpu <= -1:
                 print('Using CPU device')
             elif not self.cuda:
                 print('CUDA is not available. Defaulting to CPU device')
@@ -84,7 +91,7 @@ class SteganoGAN(object):
         self.critic.to(self.device)
 
     def __init__(self, data_depth, encoder, decoder, critic,
-                 perceptual_loss=False, cuda=False, verbose=False, log_dir=None, **kwargs):
+                 perceptual_loss=False, gpu=0, verbose=False, log_dir=None, **kwargs):
 
         self.perceptual_loss = perceptual_loss
         self.verbose = verbose
@@ -94,7 +101,7 @@ class SteganoGAN(object):
         self.encoder = self._get_instance(encoder, kwargs)
         self.decoder = self._get_instance(decoder, kwargs)
         self.critic = self._get_instance(critic, kwargs)
-        self.set_device(cuda)
+        self.set_device(gpu)
 
         self.critic_optimizer = None
         self.decoder_optimizer = None
@@ -102,7 +109,7 @@ class SteganoGAN(object):
         with torch.no_grad():
             self.perceptual_loss_model = models.resnet50(pretrained=True)
             self.perceptual_loss_fc = ResNet50FC(self.perceptual_loss_model)
-            self.perceptual_loss_fc.cuda()
+            self.perceptual_loss_fc.cuda(gpu)
 
         # Misc
         self.fit_metrics = None
@@ -128,7 +135,7 @@ class SteganoGAN(object):
         data = torch.zeros((N, self.data_depth, H, W), device=self.device).random_(0, 2)
         return data #bitmask * data
 
-    def _encode_decode(self, cover, quantize=False):
+    def _encode_decode(self, cover, quantize=False, transform=None):
         """Encode random data and then decode it.
 
         Args:
@@ -142,13 +149,37 @@ class SteganoGAN(object):
         """
         payload = self._random_data(cover)
         generated = self.encoder(cover, payload)
+
         if quantize:
             generated = (255.0 * (generated + 1.0) / 2.0).long()
             generated = 2.0 * generated.float() / 255.0 - 1.0
 
-        decoded = self.decoder(generated)
+        if transform == 'rotate':
+            transformed = transforms.rotate_left_90(generated)
+        elif transform == 'gaussian':
+            transformed = transforms.add_gaussian_noise(generated)
+        elif transform == 'white_filter':
+            transformed = transforms.color_filter(generated, alpha=0.7,
+                color=(255., 255., 255.))
+        elif transform == 'black_filter':
+            transformed = transforms.color_filter(generated, alpha=0.7,
+                color=(0., 0., 0.))
+        elif transform == 'red_filter':
+            transformed = transforms.color_filter(generated, alpha=0.7,
+                color=(255., 0., 0.))
+        elif transform == 'green_filter':
+            transformed = transforms.color_filter(generated, alpha=0.7,
+                color=(0., 255., 0.))
+        elif transform == 'blue_filter':
+            transformed = transforms.color_filter(generated, alpha=0.7,
+                color=(0., 0., 255.))
+        else:
+            transformed = generated
 
-        return generated, payload, decoded
+        decoded_g = self.decoder(generated)
+        decoded_t = self.decoder(transformed)
+
+        return generated, payload, decoded_g, decoded_t
 
     def _critic(self, image):
         """Evaluate the image using the critic"""
@@ -181,18 +212,20 @@ class SteganoGAN(object):
             metrics['train.cover_score'].append(cover_score.item())
             metrics['train.generated_score'].append(generated_score.item())
 
-
-    def transform(transform_type='color_filter'):
-        pass
-
-    def _fit_coders(self, train, metrics):
+    def _fit_coders(self, train, metrics, transform, transform_prob):
         """Fit the encoder and the decoder on the train images."""
         for cover, _ in tqdm(train, disable=not self.verbose):
             gc.collect()
             cover = cover.to(self.device)
-            generated, payload, decoded = self._encode_decode(cover)
-            encoder_mse, decoder_loss, decoder_acc = self._coding_scores(
-                cover, generated, payload, decoded)
+            if torch.rand(1).item() < transform_prob:
+                batch_transform = transform
+            else:
+                batch_transform = None
+            generated, payload, decoded_g, decoded_t = self._encode_decode(cover,
+                transform=batch_transform)
+            encoder_mse, decoder_loss_g, decoder_acc_g = self._coding_scores(
+                cover, generated, payload, decoded_g)
+            _, decoder_loss_t, decoder_acc_t = self._coding_scores(cover, generated, payload, decoded_t)
             generated_score = self._critic(generated)
 
             phi_generated = self.perceptual_loss_fc.forward(generated).squeeze() # [batch size, 2048]
@@ -201,7 +234,7 @@ class SteganoGAN(object):
 
             self.decoder_optimizer.zero_grad()
 
-            total_loss = 100.0 * encoder_mse + decoder_loss + generated_score
+            total_loss = 100.0 * encoder_mse + (decoder_loss_g + decoder_loss_t) / 2 + generated_score
             if self.perceptual_loss:
                 total_loss += perceptual_loss
 
@@ -210,8 +243,10 @@ class SteganoGAN(object):
 
             metrics['train.perceptual_loss'].append(perceptual_loss.item())
             metrics['train.encoder_mse'].append(encoder_mse.item())
-            metrics['train.decoder_loss'].append(decoder_loss.item())
-            metrics['train.decoder_acc'].append(decoder_acc.item())
+            metrics['train.decoder_loss_t'].append(decoder_loss_t.item())
+            metrics['train.decoder_loss_g'].append(decoder_loss_g.item())
+            metrics['train.decoder_acc_t'].append(decoder_acc_t.item())
+            metrics['train.decoder_acc_g'].append(decoder_acc_g.item())
 
     def _coding_scores(self, cover, generated, payload, decoded):
         encoder_mse = mse_loss(generated, cover)
@@ -220,14 +255,17 @@ class SteganoGAN(object):
 
         return encoder_mse, decoder_loss, decoder_acc
 
-    def _validate(self, validate, metrics):
+    def _validate(self, validate, metrics, transform=None):
         """Validation process"""
         for cover, _ in tqdm(validate, disable=not self.verbose):
             gc.collect()
             cover = cover.to(self.device)
-            generated, payload, decoded = self._encode_decode(cover, quantize=True)
-            encoder_mse, decoder_loss, decoder_acc = self._coding_scores(
-                cover, generated, payload, decoded)
+            generated, payload, decoded_g, decoded_t = self._encode_decode(
+                cover, quantize=True, transform=transform)
+            encoder_mse, decoder_loss_g, decoder_acc_g = self._coding_scores(
+                cover, generated, payload, decoded_g)
+            _, decoder_loss_t, decoder_acc_t = self._coding_scores(cover,
+                generated, payload, decoded_t)
             generated_score = self._critic(generated)
             cover_score = self._critic(cover)
 
@@ -235,21 +273,25 @@ class SteganoGAN(object):
             with torch.no_grad():
                 phi_generated = self.perceptual_loss_fc.forward(generated).squeeze() # [batch size, 2048]
                 phi_cover = self.perceptual_loss_fc.forward(cover).squeeze()
-                perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated, p=2, dim=1), dim=0)
+                perceptual_loss = torch.mean(torch.norm(phi_cover - phi_generated,
+                    p=2, dim=1), dim=0)
 
             metrics['val.perceptual_loss'].append(perceptual_loss.item())
             metrics['val.encoder_mse'].append(encoder_mse.item())
-            metrics['val.decoder_loss'].append(decoder_loss.item())
-            metrics['val.decoder_acc'].append(decoder_acc.item())
+            metrics['val.decoder_loss_g'].append(decoder_loss_g.item())
+            metrics['val.decoder_loss_t'].append(decoder_loss_t.item())
+            metrics['val.decoder_acc_g'].append(decoder_acc_g.item())
+            metrics['val.decoder_acc_t'].append(decoder_acc_t.item())
             metrics['val.cover_score'].append(cover_score.item())
             metrics['val.generated_score'].append(generated_score.item())
             metrics['val.ssim'].append(ssim(cover, generated).item())
             metrics['val.psnr'].append(10 * torch.log10(4 / encoder_mse).item())
-            metrics['val.bpp'].append(self.data_depth * (2 * decoder_acc.item() - 1))
+            metrics['val.bpp_g'].append(self.data_depth * (2 * decoder_acc_g.item() - 1))
+            metrics['val.bpp_t'].append(self.data_depth * (2 * decoder_acc_t.item() - 1))
 
     def _generate_samples(self, samples_path, cover, epoch):
         cover = cover.to(self.device)
-        generated, payload, decoded = self._encode_decode(cover)
+        generated, payload, decoded, _ = self._encode_decode(cover)
         samples = generated.size(0)
         for sample in range(samples):
             cover_path = os.path.join(samples_path, '{}.cover.png'.format(sample))
@@ -265,7 +307,7 @@ class SteganoGAN(object):
             image = sampled / 2.0
             imageio.imwrite(sample_path, (255.0 * image).astype('uint8'))
 
-    def fit(self, train, validate, epochs=5):
+    def fit(self, train, validate, epochs=5, transform=None, transform_prob=0):
         """Train a new model with the given ImageLoader class."""
 
         if self.critic_optimizer is None:
@@ -287,8 +329,9 @@ class SteganoGAN(object):
                 print('Epoch {}/{}'.format(self.epochs, total))
 
             self._fit_critic(train, metrics)
-            self._fit_coders(train, metrics)
-            self._validate(validate, metrics)
+            self._fit_coders(train, metrics, transform=transform,
+                transform_prob=transform_prob)
+            self._validate(validate, metrics, transform=transform)
 
             self.fit_metrics = {k: sum(v) / len(v) for k, v in metrics.items()}
             self.fit_metrics['epoch'] = epoch
@@ -301,7 +344,7 @@ class SteganoGAN(object):
                     json.dump(self.history, metrics_file, indent=4)
 
                 save_name = '{}.bpp-{:03f}.p'.format(
-                    self.epochs, self.fit_metrics['val.bpp'])
+                    self.epochs, self.fit_metrics['val.bpp_g'])
 
                 self.save(os.path.join(self.log_dir, save_name))
                 self._generate_samples(self.samples_path, sample_cover, epoch)
@@ -383,7 +426,7 @@ class SteganoGAN(object):
         torch.save(self, path)
 
     @classmethod
-    def load(cls, architecture=None, path=None, cuda=True, verbose=False):
+    def load(cls, architecture=None, path=None, gpu=0, verbose=False):
         """Loads an instance of SteganoGAN for the given architecture (default pretrained models)
         or loads a pretrained model from a given path.
 
@@ -403,12 +446,13 @@ class SteganoGAN(object):
             raise ValueError(
                 'Please provide either an architecture or a path to pretrained model.')
 
-        steganogan = torch.load(path, map_location='cpu')
+        device = 'cuda:{}'.format(gpu) if gpu > -1 else 'cpu'
+        steganogan = torch.load(path, map_location=device)
         steganogan.verbose = verbose
 
         steganogan.encoder.upgrade_legacy()
         steganogan.decoder.upgrade_legacy()
         steganogan.critic.upgrade_legacy()
 
-        steganogan.set_device(cuda)
+        steganogan.set_device(gpu)
         return steganogan

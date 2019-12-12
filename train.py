@@ -15,7 +15,7 @@ from loader import DataLoader
 
 def main():
     torch.manual_seed(42)
-    
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', default=str(int(time())), type=str)
 
@@ -23,6 +23,9 @@ def main():
     parser.add_argument('--decoder', default="dense", type=str)
     parser.add_argument('--critic', default="basic", type=str)
     parser.add_argument('--perceptual', default=False, action="store_true")
+
+    parser.add_argument('--transform', default=None, type=str)
+    parser.add_argument('--transform_prob', default=0, type=float)
 
     parser.add_argument('--epochs', default=1, type=int)
 
@@ -33,7 +36,7 @@ def main():
     parser.add_argument('--gpu', default=0, type=int)
 
     args = parser.parse_args()
-    
+
     torch.cuda.set_device(args.gpu)
 
     train = DataLoader(os.path.join("data", args.dataset, "train"), shuffle=True, num_workers=0)
@@ -71,7 +74,8 @@ def main():
     with open(os.path.join("models", args.name, "config.json"), "wt") as fout:
         fout.write(json.dumps(args.__dict__, indent=2, default=lambda o: str(o)))
 
-    model.fit(train, validation, epochs=args.epochs)
+    model.fit(train, validation, epochs=args.epochs, transform=args.transform,
+        transform_prob=args.transform_prob)
     model.save(os.path.join("models", args.name, "weights.bin"))
     if args.output:
         model.save(args.output)
