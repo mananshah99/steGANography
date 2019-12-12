@@ -37,7 +37,6 @@ class BasicEncoder(nn.Module):
             nn.LeakyReLU(inplace=True),
             nn.BatchNorm2d(self.hidden_size),
             self._conv2d(self.hidden_size, 3),
-            nn.Tanh(),
         )
         return self.features, self.layers
 
@@ -64,6 +63,8 @@ class BasicEncoder(nn.Module):
 
         if self.add_image:
             x = image + x
+
+        x = nn.Tanh()(x)
 
         return x
 

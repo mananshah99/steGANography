@@ -24,9 +24,10 @@ def main():
     torch.cuda.set_device(args.gpu)
 
     validation = DataLoader(os.path.join("data", args.dataset, "val"), shuffle=False, num_workers=0)
-    model = SteganoGAN.load(args.path, args.gpu)
-    metrics = {}
+    model = SteganoGAN.load(path=args.path)
+    metrics = {field: list() for field in METRIC_FIELDS}
     model._validate(validation, metrics, transform=args.transform)
+    metrics = {k: torch.tensor(v).mean().item() for k, v in metrics.items()}
     print(metrics)
 
 if __name__ == '__main__':
